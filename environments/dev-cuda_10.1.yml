@@ -1,0 +1,20 @@
+name: DialoGPT-dev
+channels:
+  - defaults
+  - conda-forge
+  - pytorch
+dependencies:
+  - python
+  - pip
+  - ipython
+  - ipywidgets
+  - nb_conda
+  - boto3
+  - nltk
+  - tqdm
+  - regex
+  - requests
+  - pytorch::pytorch
+  - pytorch::torchvision
+  - cudatoolkit=10.1
+  - pytorch-pretrained-bert
