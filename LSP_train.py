@@ -216,7 +216,7 @@ optimizer_grouped_parameters = [
 if args.fp16:
     logger.info('in fp16, using FusedAdam')
     try:
-        from apex.fp16_utils import FP16_Optimizer
+        from apex import amp
         from apex.optimizers import FusedAdam
     except ImportError:
         raise ImportError(
@@ -226,13 +226,17 @@ if args.fp16:
     optimizer = FusedAdam(optimizer_grouped_parameters,
                           lr=args.learning_rate,
                           bias_correction=False)
-    if args.loss_scale == 0:
-        optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True,
-                                   verbose=False)
-    else:
-        optimizer = FP16_Optimizer(optimizer,
-                                   static_loss_scale=args.loss_scale,
-                                   verbose=False)
+    # Allow Amp to perform casts as required by the opt_level
+    model, optimizer = amp.initialize(
+        model,
+        optimizer,
+        opt_level='O1',
+        loss_scale='dynamic' if args.loss_scale == 0 else args.loss_scale
+    )
+    # Parallel wrappers should only be applied to the model(s) AFTER the model(s) have been returned from amp.initialize.
+    if n_gpu > 1:
+        logging.info('data parallel because more than one gpu')
+        model = torch.nn.DataParallel(model)
 else:
     optimizer = Adam(optimizer_grouped_parameters, args.learning_rate,
                      max_grad_norm=1.0)
@@ -284,7 +288,9 @@ while True:
             ppl = ppl.mean()
         loss = loss / (args.train_batch_size / input_ids.shape[0])
         if args.fp16:
-            optimizer.backward(loss)
+            # Amp loss.backward() becomes:
+            with amp.scale_loss(loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
         else:
             loss.backward()
 
@@ -332,8 +338,10 @@ while True:
                 epoch_time = time.time() - train_start_time_epoch
                 if pbar is not None:
                     pbar.set_postfix_str(
-                        f"tok/s: {n_token_real_all_proc//epoch_time//1000}k "
-                        f"ppl: {mean_ppl:.2f} epoch: {epoch}")
+                        f"tok/s: {n_token_real_all_proc/epoch_time/1024:.2f}k "
+                        f"ppl: {mean_ppl:.2f} "
+                        f"epoch: {epoch}"
+                    )
                     pbar.update(1)
                 print('{},{},{},{},{},{},{},{}'.format(
                     epoch+1, global_step+1, step+1, mean_loss, mean_ppl,

@@ -38,13 +38,17 @@ def load_model(model, checkpoint, args, verbose=False):
             start_model = model.transformer
         start_model.load_state_dict(model_state_dict)
 
-    if args.fp16:
-        logger.info('in fp16, model.half() activated')
-        model.half()
+    ## When using amp.initialize, you do not need to call .half() on your model before passing it, no matter what optimization level you choose.
+    ## Un-scaling non-fp32 grads may indicate an error. When using Amp, you don't need to call .half() on your model.
+    # if args.fp16:
+    #     logger.info('in fp16, model.half() activated')
+    #     model.half()
     model.to(device)
-    if n_gpu > 1:
-        logging.info('data parallel because more than one gpu')
-        model = torch.nn.DataParallel(model)
+    ## When incoming model is an instance of torch.nn.parallel.DataParallel.
+    ## Parallel wrappers should only be applied to the model(s) AFTER the model(s) have been returned from amp.initialize.
+    # if n_gpu > 1:
+    #     logging.info('data parallel because more than one gpu')
+    #     model = torch.nn.DataParallel(model)
     return model
 
 
