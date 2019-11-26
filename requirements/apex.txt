@@ -1,0 +1,1 @@
+https://github.com/NVIDIA/apex/archive/master.zip --global-option="--cpp_ext" --global-option="--cuda_ext"

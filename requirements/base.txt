@@ -1,0 +1,7 @@
+boto3
+nltk
+regex
+requests
+tqdm
+torch
+torchvision
