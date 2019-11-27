@@ -30,12 +30,6 @@ from data_loader import BucketingDataLoader, DynamicBatchingLoader, DistributedB
 from gpt2_training.distributed import all_reduce_and_rescale_tensors, all_gather_list
 
 
-logging.basicConfig(
-    format='%(asctime)s - %(levelname)s [%(process)05d] - %(name)s -   %(message)s',
-    level=logging.DEBUG
-)
-logger = logging.getLogger(__name__)
-
 INF = 100000000
 CACHE_EMPTY_STEP = 10000
 EVAL_STEP = 100000
@@ -45,8 +39,10 @@ EVAL_STEP = 100000
 ##########################################################################
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--num_epochs', type=int, default=1,
+parser.add_argument('-e', '--num_epochs', type=int, default=1,
                     help='number of epochs')
+parser.add_argument('-l', '--logging_level', type=str, default='info', choices=[s.lower() for s in logging._nameToLevel.keys()],
+                    help=f'logging level')
 parser.add_argument('--model_name_or_path', type=str,
                     help='pretrained model name or path to local checkpoint')
 parser.add_argument("--seed", type=int, default=42)
@@ -93,6 +89,14 @@ parser.add_argument('--config', help='JSON config file')
 # do normal parsing
 args = parser.parse_args()
 
+# logging config
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s [%(process)05d] - %(name)s -   %(message)s',
+    level=logging._nameToLevel[args.logging_level.upper()]
+)
+logger = logging.getLogger(__name__)
+
+
 if args.config is not None:
     # override argparse defaults by config JSON
     opts = json.load(open(args.config))
@@ -137,8 +141,12 @@ else:
     device = torch.device("cuda", args.local_rank)
     # Initializes the distributed backend which will take care of
     # sychronizing nodes/GPUs
+    logging.debug('Initializes the distributed backend ...')
+    logging.debug('env MASTER_ADDR=%s', os.getenv('MASTER_ADDR'))
+    logging.debug('env MASTER_PORT=%s', os.getenv('MASTER_PORT'))
     torch.distributed.init_process_group(backend='nccl')
     n_gpu = torch.distributed.get_world_size()
+    logging.debug('n_gpu of distributed: %s', n_gpu)
     args.device, args.n_gpu = device, 1
     logger.info("device: {} n_gpu: {}, distributed training: {}, "
                 "16-bits training: {}".format(
@@ -248,6 +256,8 @@ else:
 # Training !
 ##########################################################################
 
+logger.info("Training !")
+
 if args.local_rank == -1 or get_rank() == 0:
     train_logger = open(join(log_dir, 'train_log.txt'), 'a+', buffering=1)
     eval_logger = open(join(log_dir, 'eval_log.txt'), 'a+', buffering=1)
@@ -273,7 +283,7 @@ if args.local_rank == -1 or get_rank() == 0:
         pbar = None
 
 while epoch < args.num_epochs:
-    logger.debug("epoch %d >>>", epoch)
+    logger.info("epoch %d. global_step=%s", epoch, global_step)
     model.train()
     (tr_loss, tr_ppl, mean_ppl, nb_tr_examples, nb_tr_steps) = 0.0, 0.0, 0.0, 0, 0
     n_token_real, n_token_total = 0, 0
@@ -284,14 +294,8 @@ while epoch < args.num_epochs:
         seq_len = batch[0].shape[1]
         logger.debug("global_step %d: seq_len=%s", global_step, seq_len)
         logger.debug('batch:\t%s', batch)
-        logger.debug('---------')
-        for t in batch:
-            logger.debug('%s', t)
-            logger.debug('>>> to(%s)', device)
-            # FIXME: distributed 的时候，这里有问题！！！！
-            t = t.to(device)
-            logger.debug('<<< to(%s)', device)
-        logger.debug("global_step %d: batch to tuple ...", global_step)
+        # FIXME: distributed 的时候，这里有问题！！！！
+        logger.debug("global_step %d: batch to device %s ...", global_step, device)
         batch = tuple(t.to(device) for t in batch)
         logger.debug("global_step %d: batch extract ...", global_step)
         input_ids, position_ids, token_ids, label_ids, *_ = batch
@@ -365,10 +369,11 @@ while epoch < args.num_epochs:
             # Print log info to file
             logger.debug("global_step %d: Print log info to file ... 1", global_step)
             if args.local_rank != -1:
+                # FIXME: distributed 的时候，这里有问题！！！！
+                # 下面两行是单 GPU 的复制上来的，原本的有问题！
                 n_token_real_all_proc = n_token_real
                 n_token_total_all_proc = n_token_total
-                logger.debug("global_step %d: Print log info to file ... 1.1", global_step)
-                # FIXME: distributed 的时候，这里有问题！！！！
+                # logger.debug("global_step %d: Print log info to file ... 1.1", global_step)
                 # logger.debug("get_world_size():\t%s", get_world_size())
                 # logger.debug("mean_loss:\t%s", mean_loss)
                 # mean_loss = sum(all_gather_list(mean_loss)) / get_world_size()
@@ -448,8 +453,8 @@ while epoch < args.num_epochs:
     if global_step >= args.num_optim_steps:
         break
     epoch += 1
-# end while
-logger.debug('epoch %s: end of while loop', epoch)
+
+logger.info("Training compelted!")
 
 
 if args.local_rank == -1 or get_rank() == 0:
