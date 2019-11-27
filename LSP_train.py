@@ -141,12 +141,10 @@ else:
     device = torch.device("cuda", args.local_rank)
     # Initializes the distributed backend which will take care of
     # sychronizing nodes/GPUs
-    logging.debug('Initializes the distributed backend ...')
-    logging.debug('env MASTER_ADDR=%s', os.getenv('MASTER_ADDR'))
-    logging.debug('env MASTER_PORT=%s', os.getenv('MASTER_PORT'))
+    logger.debug('>>> torch.distributed.init_process_group')
     torch.distributed.init_process_group(backend='nccl')
+    logger.debug('<<< torch.distributed.init_process_group')
     n_gpu = torch.distributed.get_world_size()
-    logging.debug('n_gpu of distributed: %s', n_gpu)
     args.device, args.n_gpu = device, 1
     logger.info("device: {} n_gpu: {}, distributed training: {}, "
                 "16-bits training: {}".format(
@@ -158,19 +156,22 @@ torch.cuda.manual_seed(args.seed)
 if n_gpu > 0:
     torch.cuda.manual_seed_all(args.seed)
 
-timestamp = datetime.datetime.now().strftime('%Y-%m-%d%H%M%S')
+timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 output_dir = join(args.output_dir,
                   'GPT2.{}.{}.{}gpu.{}'.format(args.learning_rate,
                                                args.train_batch_size, n_gpu,
                                                timestamp))
 log_dir = args.log_dir if args.log_dir is not None and len(args.log_dir) > 0 else output_dir
 if args.local_rank == -1 or get_rank() == 0:
+    logger.debug('make output dir %s', output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-logger.info('Input Argument Information')
 args_dict = vars(args)
-for a in args_dict:
-    logger.info('%-28s  %s' % (a, args_dict[a]))
+args_strings = []
+for k, v in args_dict.items():
+    args_strings.append('\t--{:28}  {}'.format(k, v))
+args_strings = os.linesep + os.linesep.join(args_strings)
+logger.info('Input Argument Information:%s', args_strings)
 
 
 #########################################################################

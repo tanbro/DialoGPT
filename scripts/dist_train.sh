@@ -1,9 +1,8 @@
-env MASTER_ADDR=127.0.0.1 MASTER_PORT=29500 NCCL_DEBUG=DEBUG \
+env NCCL_DEBUG=info \
 python -m torch.distributed.launch \
     --nproc_per_node=2 \
 LSP_train.py \
-    --logging_level DEBUG \
-    --local_rank 0 \
+    --logging_level debug \
     --config models/small/config.json \
     --model_name_or_path ./models/small \
     --init_checkpoint ./models/small/pytorch_model.bin \
