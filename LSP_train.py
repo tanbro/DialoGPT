@@ -5,30 +5,31 @@
           Modified based on Huggingface GPT-2 implementation
 '''
 
+import argparse
+import datetime
 import json
+import logging
 import os
 import sys
-import argparse
-import logging
 import time
-import tqdm
-import datetime
-import torch
+from os.path import join
 
 import numpy as np
+import torch
+import tqdm
+from torch.distributed import get_rank, get_world_size, barrier
+from torch.nn import DataParallel
+from torch.nn.parallel import DistributedDataParallel
 
-from os.path import join
-from torch.distributed import get_rank, get_world_size
-
-from lsp_model import GPT2LMHeadModel, GPT2Tokenizer, GPT2Config, Adam
-from gpt2_training.train_utils import load_model, boolean_string, set_lr, get_eval_list_same_length
+from data_loader import (BucketingDataLoader, DistributedBucketingDataLoader,
+                         DynamicBatchingLoader)
+from gpt2_training.distributed import (all_gather_list,
+                                       all_reduce_and_rescale_tensors)
 from gpt2_training.eval_utils import eval_model_loss
-
-from data_loader import BucketingDataLoader, DynamicBatchingLoader, DistributedBucketingDataLoader
-
-
-from gpt2_training.distributed import all_reduce_and_rescale_tensors, all_gather_list
-
+from gpt2_training.train_utils import (boolean_string,
+                                       get_eval_list_same_length, load_model,
+                                       set_lr)
+from lsp_model import Adam, GPT2Config, GPT2LMHeadModel, GPT2Tokenizer
 
 INF = 100000000
 CACHE_EMPTY_STEP = 10000
@@ -187,10 +188,16 @@ if args.local_rank == -1:
                                            args.train_batch_size,
                                            args.max_seq_length)
 else:
+    logger.debug(
+        'construct DistributedBucketingDataLoader for train ... '
+        'rank=%s, world_size=%s, train_input_file=%s, train_batch_size=%s, train_batch_size=%s',
+        get_rank(), get_world_size(), args.train_input_file, args.train_batch_size, args.max_seq_length
+    )
     train_dataloader = DistributedBucketingDataLoader(
         get_rank(), get_world_size(),
         args.train_input_file, args.train_batch_size,
         args.max_seq_length)
+    logger.debug('train_dataloader.keys: %s', train_dataloader._get_keys())
 
 eval_dataloader_loss = DynamicBatchingLoader(
     args.eval_input_file, enc, args.normalize_data,
@@ -203,8 +210,10 @@ eval_dataloader_gen = get_eval_list_same_length(
 #########################################################################
 # Prepare Model and Optimizer
 ##########################################################################
+logger.debug('>>> load_model')
 model = load_model(GPT2LMHeadModel(config), args.init_checkpoint,
                    args, verbose=True)
+logger.debug('<<< load_model')
 if args.local_rank != -1:
     # when from scratch make sure initial models are the same
     params = [p.data for p in model.parameters()]
@@ -213,7 +222,7 @@ if args.local_rank != -1:
 
 model_parameters = filter(lambda p: p.requires_grad, model.parameters())
 total_params = sum([np.prod(p.size()) for p in model_parameters])
-logger.info('Number of parameter = {}'.format(total_params))
+logger.info('Number of parameter = %s', total_params)
 
 param_optimizer = list(model.named_parameters())
 no_decay = ['bias', 'ln']   # no decay for bias and LayerNorm (ln)
@@ -245,13 +254,15 @@ if args.fp16:
         opt_level='O1',
         loss_scale='dynamic' if args.loss_scale == 0 else args.loss_scale
     )
-    # Parallel wrappers should only be applied to the model(s) AFTER the model(s) have been returned from amp.initialize.
-    if n_gpu > 1:
-        logging.info('data parallel because more than one gpu')
-        model = torch.nn.DataParallel(model)
 else:
     optimizer = Adam(optimizer_grouped_parameters, args.learning_rate,
                      max_grad_norm=1.0)
+
+# Parallel wrappers should only be applied to the model(s) AFTER the model(s) have been returned from amp.initialize.
+if args.local_rank == -1:
+    if n_gpu > 1:
+        logging.info('data parallel because more than one gpu')
+        model = DataParallel(model)
 
 #########################################################################
 # Training !
@@ -283,6 +294,12 @@ if args.local_rank == -1 or get_rank() == 0:
     else:
         pbar = None
 
+
+if args.local_rank != -1:
+    logger.debug('barrier()')
+    barrier()
+
+
 while epoch < args.num_epochs:
     logger.info("epoch %d. global_step=%s", epoch, global_step)
     model.train()
@@ -290,39 +307,22 @@ while epoch < args.num_epochs:
     n_token_real, n_token_total = 0, 0
     train_start_time_epoch = time.time()
     for batch in train_dataloader:
-        logger.debug("global_step %d: iterate train_dataloader", global_step)
         # activate new training mode
         seq_len = batch[0].shape[1]
-        logger.debug("global_step %d: seq_len=%s", global_step, seq_len)
-        logger.debug('batch:\t%s', batch)
-        # FIXME: distributed 的时候，这里有问题！！！！
-        logger.debug("global_step %d: batch to device %s ...", global_step, device)
         batch = tuple(t.to(device) for t in batch)
-        logger.debug("global_step %d: batch extract ...", global_step)
         input_ids, position_ids, token_ids, label_ids, *_ = batch
-        logger.debug("global_step %d: input_ids: \t%s", global_step, input_ids)
-        logger.debug("global_step %d: position_ids: \t%s", global_step, position_ids)
-        logger.debug("global_step %d: token_ids: \t%s", global_step, token_ids)
-        logger.debug("global_step %d: label_ids: \t%s", global_step, label_ids)
         if args.no_token_id:
-            logger.debug("global_step %d: token_ids = None", global_step)
             token_ids = None
-        logger.debug("global_step %d: forward...", global_step)
         loss, ppl = model(input_ids, position_ids, token_ids, label_ids)
-        logger.debug("global_step %d: forward OK.", global_step)
-        logger.debug("global_step %d: loss=%s", global_step, loss)
-        logger.debug("global_step %d: ppl=%s", global_step, ppl)
-
+        ## 似乎这样才行，可能是 scalar
         if loss.shape:
-            logger.debug("global_step %d: loss.mean()", global_step)
             loss = loss.mean()
         if ppl.shape:
-            logger.debug("global_step %d: ppl.mean()", global_step)
             ppl = ppl.mean()
+        ## 而这样对于 proc 的 distribute 是有问题的！可能
         # if n_gpu > 1:
         #     loss = loss.mean()
         #     ppl = ppl.mean()
-        logger.debug("global_step %d: loss = loss / (args.train_batch_size / input_ids.shape[0])", global_step)
         loss = loss / (args.train_batch_size / input_ids.shape[0])
         if args.fp16:
             # Amp loss.backward() becomes:
@@ -346,6 +346,10 @@ while epoch < args.num_epochs:
         n_token_total += input_ids.shape[0] * input_ids.shape[1]
         n_token_real += (input_ids != 0).sum().item()
 
+        if args.local_rank != -1:
+            logger.debug("global_step %d: barrier", global_step)
+            barrier()
+        # FIXME: distributed 的时候，如果多 proc 一旦 使用 optimizer ，后续的 CUDA 操作就会 dead lock!!!!
         # gradient update
         logger.debug("global_step %d: gradient update. ", global_step)
         step += 1
@@ -354,43 +358,43 @@ while epoch < args.num_epochs:
                    args.lr_schedule, args.learning_rate,
                    args.warmup_steps, args.warmup_proportion,
                    config.n_embd, args.num_optim_steps)
+            # TODO: 临时试试看，别忘了恢复上面的 comments
 
-            if args.local_rank != -1:
-                grads = [p.grad.data for p in model.parameters()
-                         if p.requires_grad and p.grad is not None]
-                all_reduce_and_rescale_tensors(grads, float(1))
+            # if args.local_rank != -1:
+            #     grads = [p.grad.data for p in model.parameters()
+            #              if p.requires_grad and p.grad is not None]
+            #     all_reduce_and_rescale_tensors(grads, float(1))
+            # TODO: 临时试试看，别忘了恢复上面的 comments
 
             logger.debug("global_step %d: optimizer.step()... ", global_step)
             optimizer.step()
             logger.debug("global_step %d: optimizer.zero_grad()... ", global_step)
             optimizer.zero_grad()
             logger.debug("global_step %d: global_step += 1", global_step)
+            # TODO: 临时试试看，别忘了恢复上面的 comments
             global_step += 1
 
             # Print log info to file
-            logger.debug("global_step %d: Print log info to file ... 1", global_step)
+            logger.debug("global_step %d: DUMMY DATA", global_step)
+            x = torch.zeros(1)
+            logger.debug("global_step %d: DUMMY DATA - x: %s", global_step, x)
+            logger.debug("global_step %d: DUMMY DATA - to %s", global_step, device)
+            x = x.to(device)
+            logger.debug("global_step %d: DUMMY DATA - x: %s", global_step, x)
+            logger.debug("global_step %d: 0001", global_step)
             if args.local_rank != -1:
-                # FIXME: distributed 的时候，这里有问题！！！！
-                # 下面两行是单 GPU 的复制上来的，原本的有问题！
-                n_token_real_all_proc = n_token_real
-                n_token_total_all_proc = n_token_total
-                # logger.debug("global_step %d: Print log info to file ... 1.1", global_step)
-                # logger.debug("get_world_size():\t%s", get_world_size())
-                # logger.debug("mean_loss:\t%s", mean_loss)
-                # mean_loss = sum(all_gather_list(mean_loss)) / get_world_size()
-                # logger.debug("global_step %d: Print log info to file ... 1.2", global_step)
-                # mean_ppl = sum(all_gather_list(mean_ppl)) / get_world_size()
-                # logger.debug("global_step %d: Print log info to file ... 1.3 n_token_real=%s", global_step, n_token_real)
-                # n_token_real_all_proc = sum(all_gather_list(n_token_real))
-                # logger.debug("global_step %d: Print log info to file ... 1.4", global_step)
-                # n_token_total_all_proc = sum(all_gather_list(n_token_total))
-                # logger.debug("global_step %d: Print log info to file ... 1.5", global_step)
+                mean_loss = sum(all_gather_list(mean_loss)) / get_world_size()
+                mean_ppl = sum(all_gather_list(mean_ppl)) / get_world_size()
+                n_token_real_all_proc = sum(all_gather_list(n_token_real))
+                n_token_total_all_proc = sum(all_gather_list(n_token_total))
             else:
                 n_token_real_all_proc = n_token_real
                 n_token_total_all_proc = n_token_total
+            # TODO: 临时试试看，别忘了恢复上面的 comments
+            # n_token_real_all_proc = 1  # TODO: 假的，别忘记删除这一行
+            # n_token_total_all_proc = 1  # TODO: 假的，别忘记删除这一行
 
-            logger.debug("global_step %d: Print log info to file ... 2", global_step)
-
+            logger.debug("global_step %d: 0002", global_step)
             if args.local_rank == -1 or get_rank() == 0:
                 epoch_time = time.time() - train_start_time_epoch
                 if pbar is not None:
@@ -405,21 +409,22 @@ while epoch < args.num_epochs:
                     n_token_real_all_proc, n_token_total_all_proc, epoch_time),
                     file=train_logger)
 
-            logger.debug("global_step %d: Print log info to file ... 3", global_step)
-
+            logger.debug("global_step %d: 0003", global_step)
             if global_step % args.valid_step == 0:
                 if args.local_rank == -1 or get_rank() == 0:
                     # only rank 0 process evaluate
-                    logger.debug("global_step %d: torch.save ...", global_step)
+                    file_name = join(output_dir, f'GP2-pretrain-step-{global_step}.pkl')
                     torch.save(
                         {k: (v.cpu() if v is not None else None)  # save to cpu tensors
-                         for k, v in model.state_dict().items()},
-                        join(output_dir,
-                             f'GP2-pretrain-step-{global_step}.pkl'))
+                        for k, v in model.state_dict().items()},
+                        file_name
+                    )
+                    logger.info("global_step %d: success saved to %s", global_step, file_name)
 
-                    logger.debug("global_step %d: eval_model_loss ...", global_step)
+                    logger.info("global_step %d: >>> eval", global_step)
                     eval_loss, eval_ppl = eval_model_loss(
                         model, enc, eval_dataloader_loss, epoch, args)
+                    logger.info("global_step %d: <<< eval", global_step)
                     # enable generation step evaluation for now
                     # gen_response = eval_model_generation(
                     #     model, enc, eval_dataloader_gen, epoch, args)
@@ -435,8 +440,10 @@ while epoch < args.num_epochs:
                         file=eval_logger)
                     logger.info('current learning rate: '
                                 + str(optimizer.param_groups[0]['lr']))
-                    logger.debug("global_step %d: back to train", global_step)
                     model.train()
+
+                logger.debug("global_step %d: 0004", global_step)
+
             if global_step >= args.num_optim_steps:
                 logger.debug("global_step %d: break! global_step >= args.num_optim_steps", global_step)
                 break
@@ -455,8 +462,8 @@ while epoch < args.num_epochs:
         break
     epoch += 1
 
-logger.info("Training compelted!")
 
+logger.info("Training compelted!")
 
 if args.local_rank == -1 or get_rank() == 0:
     if pbar is not None:
