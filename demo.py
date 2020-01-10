@@ -15,7 +15,7 @@ import subprocess as sp
 
 
 PROJECT_FOLDER = os.path.dirname(os.path.realpath(__file__))
-PYTHON_EXE = 'python'
+PYTHON_EXE = sys.executable
 MODEL_FOLDER = os.path.join(PROJECT_FOLDER, 'models')
 DATA_FOLDER = os.path.join(PROJECT_FOLDER, 'data')
 
@@ -31,8 +31,8 @@ assert dargs.data == 'dummy' or dargs.data == 'small' or dargs.data == 'full' , 
 
 
 logging.basicConfig(
-    format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-    datefmt='%m/%d/%Y %H:%M:%S', level=logging.INFO
+    format='%(asctime)s - %(levelname)s [%(process)d](%(processName)s) - %(name)s -   %(message)s',
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 

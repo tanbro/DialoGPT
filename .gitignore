@@ -2,8 +2,14 @@
 /archives/
 
 out/
+log/
 logs/
 *.log
+*.bak
+bak/
+back/
+backup/
+backups/
 
 /data/
 !/data/dummy_data.tsv
