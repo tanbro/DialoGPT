@@ -7,6 +7,8 @@
 import os
 import sys
 import logging
+import shlex
+import shutil
 from functools import partial
 
 from demo_utils import download_model_folder
@@ -62,21 +64,24 @@ logger.info('Done!\n')
 logger.info('Downloading and Extracting Data...')
 if dargs.data == 'dummy':
     cmd = 'bash prepare4db.sh'
-    ret = sp.run(cmd.split(' '), stdout=sp.PIPE, stderr=sp.STDOUT, cwd=DATA_FOLDER)
+    sp.run(shlex.split(cmd), cwd=DATA_FOLDER, check=True)
 elif dargs.data == 'small':
-    myCmd = os.popen('cd reddit_extractor; make -j 8; cd ..').read()
+    cmd = 'make -j 8'
+    sp.run(shlex.split(cmd), cwd='reddit_extractor', check=True)
+    fname_src = os.path.join('reddit_extractor', 'data', 'out', 'train.tsv.gz')
+    fname_dst = os.path.join(DATA_FOLDER, 'train.tsv.gz')
+    shutil.copyfile(fname_src, fname_dst)
     cmd = 'gzip -d ./train.tsv.gz'
-    ret = sp.run(cmd.split(' '), stdout=sp.PIPE, stderr=sp.STDOUT, cwd=DATA_FOLDER)
+    sp.run(shlex.split(cmd), cwd=DATA_FOLDER, check=True)
 elif dargs.data == 'full':
-    myCmd = os.popen('cd reddit_extractor; SIZE=full make -j 8; cd ..').read()
-    cmd = 'gzip -d ./train.tsv.gz'
-    ret = sp.run(cmd.split(' '), stdout=sp.PIPE, stderr=sp.STDOUT, cwd=DATA_FOLDER)
+    cmd = 'make -j 8'
+    sp.run(shlex.split(cmd), cwd='reddit_extractor', env={'SIZE':'full'}, check=True)
+    fname = os.path.join('reddit_extractor', 'data', 'out', 'train.tsv.gz')
+    cmd = f'gzip -d "{fname}"'
+    sp.run(shlex.split(cmd), cwd=DATA_FOLDER, check=True)
 else:
     raise ValueError('you need to implement your own data type, or use either dummy, small, or full')
 
-if ret.returncode != 0:
-    print(f'error occurred, {ret.stdout}')
-    sys.exit(ret.returncode)
 
 logger.info('Preparing Data...')
 data_path = os.path.join(DATA_FOLDER, 'train.tsv')
@@ -85,10 +90,9 @@ data_db = f'{data_path[:-4]}.{MAX_LEN}len.db'
 if os.path.isdir(data_db):
     print(f'{data_db} exists, skip prepro.py')
 else:
-    cmd = ['prepro.py', '--corpus', data_path, '--max_seq_len', f'{MAX_LEN}']
-    cmd = ' '.join(cmd) #% {'CODE_ROOT': CODE_ROOT}
+    cmd = f'{PYTHON_EXE} prepro.py --corpus {data_path} --max_seq_len {MAX_LEN}'
     print(cmd)
-    ret = sp.run([PYTHON_EXE] + cmd.split(' '), stdout=sp.PIPE, stderr=sp.STDOUT, cwd=PROJECT_FOLDER)
+    ret = sp.run(shlex.split(cmd), cwd=PROJECT_FOLDER)
     if ret.returncode != 0:
         print(f'error occurred, {ret.stdout}')
         sys.exit(ret.returncode)
