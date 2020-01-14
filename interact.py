@@ -166,8 +166,8 @@ def run_model(args):
     model.to(device)
     model.eval()
 
-    history = []
     terminating = False
+    history = []
     while not terminating:
         raw_text = ''
         while not raw_text:
@@ -175,11 +175,14 @@ def run_model(args):
                 raw_text = input(">>> ")
             except (KeyboardInterrupt, EOFError) as err:
                 terminating = True
+                print(type(err).__name__, file=sys.stderr)
                 break
             else:
                 raw_text = raw_text.strip()
                 if not raw_text:
                     print('Prompt should not be empty!')
+        if terminating:
+            break
 
         with torch.no_grad():
             history.append(raw_text)
