@@ -172,6 +172,8 @@ def run_model(args):
     model.to(device)
     model.eval()
 
+    print('started!')
+
     terminating = False
     history = []
     while not terminating:
