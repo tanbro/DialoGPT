@@ -99,12 +99,18 @@ def generate_next_token(model, input_ids, position_ids=None, token_type_ids=None
         return prev, probs[0][prev], past
 
 
-def generate_sequence(model, input_ids, position_ids=None, token_type_ids=None, temperature=1, top_k=0, top_p=0, length=20, past=None, device='cuda'):
+def generate_sequence(model, input_ids, position_ids=None, token_type_ids=None, temperature=1, top_k=0, top_p=0, length=20, past=None, device='cuda', eos_id=None):
     output = input_ids.new_zeros([input_ids.size(0), 0])
     prev = input_ids
     for i in range(length):
-        prev, probs, past = generate_next_token(model, input_ids, position_ids,
-                                                token_type_ids, prev, temperature, top_k, top_p, past)
+        prev, probs, past = generate_next_token(
+            model, input_ids, position_ids,
+            token_type_ids, prev, temperature, top_k, top_p, past
+        )
+        if eos_id is not None:
+            tokens = prev[0].cpu()
+            if tokens[0] == eos_id:
+                break
         output = torch.cat((output, prev), dim=1)
     return output
 
@@ -190,12 +196,16 @@ def run_model(args):
             context_tokens = torch.tensor(context_tokens, device=device, dtype=torch.long).unsqueeze(0)
             position_ids = torch.arange(0, context_tokens.size(-1), dtype=torch.long, device=context_tokens.device)
 
-            out = generate_sequence(model, context_tokens, position_ids=position_ids,
-                                    length=args.generation_length, temperature=args.temperature,
-                                    top_k=args.top_k, top_p=args.top_p)
+            out = generate_sequence(
+                model, context_tokens, position_ids=position_ids,
+                length=args.generation_length, temperature=args.temperature,
+                top_k=args.top_k, top_p=args.top_p,
+                eos_id=eos_id
+            )
 
             out = out.tolist()
-            text = tokenizer.decode(cut_seq_to_eos(out[0], eos_id))  # .encode('ascii', 'ignore').decode('ascii')
+            # text = tokenizer.decode(cut_seq_to_eos(out[0], eos_id))  # .encode('ascii', 'ignore').decode('ascii')
+            text = tokenizer.decode(out[0])
             print(text)
             history.append(text)
             history = history[-(2*args.max_history+1):]
