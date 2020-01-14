@@ -18,3 +18,7 @@ dependencies:
   - pytorch::torchvision
   - cudatoolkit=10.1
   - pytorch-pretrained-bert
+  - transformers
+  - pip:
+    - sentencepiece
+    - flashtext   

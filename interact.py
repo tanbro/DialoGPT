@@ -12,6 +12,7 @@ import socket
 import subprocess as sp
 import sys
 from functools import partial
+from importlib import import_module
 from os.path import abspath, dirname, exists, join
 
 import numpy as np
@@ -21,6 +22,7 @@ from pytorch_pretrained_bert import GPT2Config, GPT2LMHeadModel, GPT2Tokenizer
 from tqdm import tqdm, trange
 
 from demo_utils import download_model_folder
+from env import END_OF_TEXT_TOKEN
 from gpt2_training.train_utils import (boolean_string,
                                        fix_state_dict_namespace,
                                        get_eval_list_same_length, load_model)
@@ -32,15 +34,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-EOS_ID = 50256
-
-
-def cut_seq_to_eos(sentence, remove_id=[-1]):
+def cut_seq_to_eos(sentence, eos_id, remove_id=[-1]):
     sent = []
     for s in sentence:
         if s in remove_id:
             continue
-        if s != EOS_ID:
+        if s != eos_id:
             sent.append(s)
         else:
             break
@@ -110,38 +109,40 @@ def generate_sequence(model, input_ids, position_ids=None, token_type_ids=None, 
     return output
 
 
-def cut_seq_to_eos(sentence, remove_id=[-1]):
-    sent = []
-    for s in sentence:
-        if s in remove_id:
-            continue
-        if s != EOS_ID:
-            sent.append(s)
-        else:
-            break
-    return sent
-
-
-def run_model():
+def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name_or_path', type=str, default='',
                         help='pretrained model name or path to local checkpoint')
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--load_checkpoint", '-c', type=str, default='')
-    parser.add_argument("--fp16", type=boolean_string, default=False)
-    parser.add_argument("--max_seq_length", type=int, default=128)
+    parser.add_argument("--fp16", type=boolean_string, default=True)
+    parser.add_argument("--max_seq_length", type=int, default=1024)
 
-    parser.add_argument("--generation_length", type=int, default=20)
-    parser.add_argument("--max_history", type=int, default=2)
+    parser.add_argument("--generation_length", type=int, default=256)
+    parser.add_argument("--max_history", type=int, default=4)
 
-    parser.add_argument("--temperature", type=float, default=1)
+    parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top_k", type=int, default=0)
     parser.add_argument("--top_p", type=float, default=0.9)
 
+    parser.add_argument("--tokenizer_class", type=str,
+                        default='tokernizers.tokenization_cn_32k_v3_2:GPT2BPETokenizer_CN')
+    parser.add_argument("--tokenizer_model", type=str,
+                        default='/home/Public/data/gpt2/output/gpt2_huamei_corpus.bpe_src.small')
+
     args = parser.parse_args()
+    return args
 
-    torch.set_grad_enabled(False)
 
+def get_tokenizer(args):
+    tokenizer_class = args.tokenizer_class.strip()
+    module_name, class_name = tokenizer_class.split(':')
+    mod = import_module(module_name)
+    clz = getattr(mod, class_name)
+    return clz.from_pretrained(args.tokenizer_model)
+
+
+def run_model(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_gpu = torch.cuda.device_count()
     args.device, args.n_gpu = device, n_gpu
@@ -150,15 +151,22 @@ def run_model():
     torch.random.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
+    # load tokenizer
+    logger.info('load tokenizer ...')
+    tokenizer = get_tokenizer(args)  # GPT2Tokenizer.from_pretrained(args.model_name_or_path)
+    eos_id = tokenizer.encode(END_OF_TEXT_TOKEN)[-1]
+    logger.info('EOS: %d', eos_id)
+
     # load the GPT-2 model
+    logger.info('load the GPT-2 model ...')
     config = GPT2Config.from_json_file(os.path.join(args.model_name_or_path, 'config.json'))
-    enc = GPT2Tokenizer.from_pretrained(args.model_name_or_path)
     model = load_model(GPT2LMHeadModel(config), args.load_checkpoint, args, verbose=True)
     model.to(device)
     model.eval()
 
-    history = []
+    logger.info('Ok.')
 
+    history = []
     terminating = False
     while not terminating:
         raw_text = ''
@@ -171,20 +179,22 @@ def run_model():
             else:
                 if not raw_text:
                     print('Prompt should not be empty!')
-        history.append(raw_text)
-        context_tokens = sum([enc.encode(h) + [EOS_ID] for h in history], [])  # + [EOS_ID]
-        context_tokens = torch.tensor(context_tokens, device=device, dtype=torch.long).unsqueeze(0)
-        position_ids = torch.arange(0, context_tokens.size(-1), dtype=torch.long, device=context_tokens.device)
 
-        out = generate_sequence(model, context_tokens, position_ids=position_ids,
-                                length=args.generation_length, temperature=args.temperature,
-                                top_k=args.top_k, top_p=args.top_p)
+        with torch.no_grad():
+            history.append(raw_text)
+            context_tokens = sum([tokenizer.encode(h) + [eos_id] for h in history], [])  # + [eos_id]
+            context_tokens = torch.tensor(context_tokens, device=device, dtype=torch.long).unsqueeze(0)
+            position_ids = torch.arange(0, context_tokens.size(-1), dtype=torch.long, device=context_tokens.device)
 
-        out = out.tolist()
-        text = enc.decode(cut_seq_to_eos(out[0])).encode('ascii', 'ignore').decode('ascii')
-        print("SYS >>> ", text)
-        history.append(text)
-        history = history[-(2*args.max_history+1):]
+            out = generate_sequence(model, context_tokens, position_ids=position_ids,
+                                    length=args.generation_length, temperature=args.temperature,
+                                    top_k=args.top_k, top_p=args.top_p)
+
+            out = out.tolist()
+            text = tokenizer.decode(cut_seq_to_eos(out[0], eos_id))  # .encode('ascii', 'ignore').decode('ascii')
+            print("SYS >>> ", text)
+            history.append(text)
+            history = history[-(2*args.max_history+1):]
 
 
 if __name__ == '__main__':
@@ -210,5 +220,4 @@ if __name__ == '__main__':
     # from_scratch: True : load model trained from scratch or False: load model trained from fine-tuning the GPT-2
     # target_folder = download_model(model_size='medium', dataset='multiref', from_scratch=False)
     # logger.info('Done!\n')
-
-    run_model()
+    exit(run_model(parse_args()))

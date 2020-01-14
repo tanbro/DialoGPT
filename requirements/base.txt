@@ -6,3 +6,4 @@ tqdm
 torch
 torchvision
 flashtext
+sentencepiece
