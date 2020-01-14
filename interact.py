@@ -126,7 +126,7 @@ def parse_args():
     parser.add_argument("--top_p", type=float, default=0.9)
 
     parser.add_argument("--tokenizer_class", type=str,
-                        default='tokernizers.tokenization_cn_32k_v3_2:GPT2BPETokenizer_CN')
+                        default='tokenizers.tokenization_cn_32k_v3_2:GPT2BPETokenizer_CN')
     parser.add_argument("--tokenizer_model", type=str,
                         default='/home/Public/data/gpt2/output/gpt2_huamei_corpus.bpe_src.small')
 
