@@ -7,9 +7,10 @@ each chunk is gzipped JSON string
 import argparse
 import gzip
 import json
+import os
 import subprocess as sp
 import shelve
-import os
+import sys
 from os.path import dirname, exists, join
 
 import torch
@@ -37,7 +38,13 @@ def _norm_text(text):
 
 
 def _get_inputs_from_text(text, tokenizer):
-    srcs, tgt = text.strip().split('\t')
+    text_parts = text.strip().split('\t')
+    if len(text_parts) == 2:
+        srcs, tgt = text_parts
+    elif len(text_parts) == 3:
+        srcs, tgt = text_parts[1:3]
+    else:
+        raise ValueError(f'un-support tsv line: {text_parts}')
     weights = []
     inputs = []
     for src in srcs.split(' EOS '):
@@ -164,6 +171,9 @@ def main(args):
         n_chunk = 0
         n_example = 0
         for line in tqdm(reader, total=_get_file_len(args.corpus)):
+            line = line.strip()
+            if not line:
+                continue
             try:
                 if len(chunk) >= args.chunk_size:
                     # save and renew chunk
@@ -187,7 +197,8 @@ def main(args):
                     chunk.append(vars(feature))
                     n_example += 1
             except Exception as e:
-                print('!!! prepro exception !!!', e)
+                err_msg = f'!!! prepro exception !!! {e!r}\n\tline ignored:\n\t\t{line}'
+                tqdm.write(err_msg)
                 continue
         # save last chunk
         db[f'chunk_{n_chunk}'] = gzip.compress(

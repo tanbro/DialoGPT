@@ -64,20 +64,25 @@ logger.info('Done!\n')
 logger.info('Downloading and Extracting Data...')
 if dargs.data == 'dummy':
     cmd = 'bash prepare4db.sh'
+    print(cmd)
     sp.run(shlex.split(cmd), cwd=DATA_FOLDER, check=True)
 elif dargs.data == 'small':
     cmd = 'make -j 8'
+    print(cmd)
     sp.run(shlex.split(cmd), cwd='reddit_extractor', check=True)
     fname_src = os.path.join('reddit_extractor', 'data', 'out', 'train.tsv.gz')
     fname_dst = os.path.join(DATA_FOLDER, 'train.tsv.gz')
     shutil.copyfile(fname_src, fname_dst)
     cmd = 'gzip -d ./train.tsv.gz'
+    print(cmd)
     sp.run(shlex.split(cmd), cwd=DATA_FOLDER, check=True)
 elif dargs.data == 'full':
     cmd = 'make -j 8'
+    print(cmd)
     sp.run(shlex.split(cmd), cwd='reddit_extractor', env={'SIZE':'full'}, check=True)
     fname = os.path.join('reddit_extractor', 'data', 'out', 'train.tsv.gz')
     cmd = f'gzip -d "{fname}"'
+    print(cmd)
     sp.run(shlex.split(cmd), cwd=DATA_FOLDER, check=True)
 else:
     raise ValueError('you need to implement your own data type, or use either dummy, small, or full')
@@ -92,10 +97,7 @@ if os.path.isdir(data_db):
 else:
     cmd = f'{PYTHON_EXE} prepro.py --corpus {data_path} --max_seq_len {MAX_LEN}'
     print(cmd)
-    ret = sp.run(shlex.split(cmd), cwd=PROJECT_FOLDER)
-    if ret.returncode != 0:
-        print(f'error occurred, {ret.stdout}')
-        sys.exit(ret.returncode)
+    sp.run(shlex.split(cmd), cwd=PROJECT_FOLDER, check=True)
 logger.info('Done!\n')
 
 #########################################################################
