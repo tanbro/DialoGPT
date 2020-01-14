@@ -161,10 +161,10 @@ def run_model(args):
     logger.info('load the GPT-2 model ...')
     config = GPT2Config.from_json_file(os.path.join(args.model_name_or_path, 'config.json'))
     model = load_model(GPT2LMHeadModel(config), args.load_checkpoint, args, verbose=True)
+    logger.info('load the GPT-2 model ok.')
+
     model.to(device)
     model.eval()
-
-    logger.info('Ok.')
 
     history = []
     terminating = False
@@ -172,11 +172,12 @@ def run_model(args):
         raw_text = ''
         while not raw_text:
             try:
-                raw_text = input("USR >>> ").strip()
+                raw_text = input(">>> ")
             except (KeyboardInterrupt, EOFError) as err:
                 terminating = True
                 break
             else:
+                raw_text = raw_text.strip()
                 if not raw_text:
                     print('Prompt should not be empty!')
 
@@ -192,7 +193,7 @@ def run_model(args):
 
             out = out.tolist()
             text = tokenizer.decode(cut_seq_to_eos(out[0], eos_id))  # .encode('ascii', 'ignore').decode('ascii')
-            print("SYS >>> ", text)
+            print(text)
             history.append(text)
             history = history[-(2*args.max_history+1):]
 
